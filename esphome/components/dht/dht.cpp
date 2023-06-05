@@ -7,6 +7,31 @@ namespace dht {
 
 static const char *const TAG = "dht";
 
+double fast_precise_pow(double a, double b) {
+  // https://martin.ankerl.com/2012/01/25/optimized-approximative-pow-in-c-and-cpp/
+  // calculate approximation with fraction of the exponent
+  int e = abs((int) b);
+  union {
+    double d;
+    int x[2];
+  } u = {a};
+  u.x[1] = (int) ((b - e) * (u.x[1] - 1072632447) + 1072632447);
+  u.x[0] = 0;
+  // exponentiation by squaring with the exponent's integer part
+  // double r = u.d makes everything much slower, not sure why
+  double r = 1.0;
+  while (e) {
+    if (e & 1) {
+      r *= a;
+    }
+    a *= a;
+    e >>= 1;
+  }
+  return r * u.d;
+}
+
+float fast_precise_powf(const float x, const float y) { return (float) fast_precise_pow(x, y); }
+
 void DHT::setup() {
   ESP_LOGCONFIG(TAG, "Setting up DHT...");
   this->pin_->digital_write(true);
@@ -89,6 +114,10 @@ bool HOT IRAM_ATTR DHT::read_sensor_(float *temperature, float *humidity, bool r
     delayMicroseconds(500);
     this->pin_->digital_write(true);
     delayMicroseconds(40);
+  } else if (this->model_ == DHT_MODEL_MS01) {
+    delayMicroseconds(450);
+    this->pin_->digital_write(true);
+    delayMicroseconds(30);
   } else if (this->model_ == DHT_MODEL_DHT22_TYPE2) {
     delayMicroseconds(2000);
   } else if (this->model_ == DHT_MODEL_AM2302) {
@@ -216,6 +245,26 @@ bool HOT IRAM_ATTR DHT::read_sensor_(float *temperature, float *humidity, bool r
   } else {
     uint16_t raw_humidity = (uint16_t(data[0] & 0xFF) << 8) | (data[1] & 0xFF);
     uint16_t raw_temperature = (uint16_t(data[2] & 0xFF) << 8) | (data[3] & 0xFF);
+
+    ESP_LOGD(TAG, "Humidity Voltage: %d", raw_humidity);
+
+    if (this->model_ == DHT_MODEL_MS01) {
+      // Logic taken from Tasmota
+      *temperature = 0.0f;
+      float x;
+      if (raw_humidity < 15037) {
+        x = raw_humidity - 15200;
+        *humidity = -fast_precise_powf(0.0024 * x, 3) - 0.0004 * x + 20.1;
+      } else if (raw_humidity < 22300) {
+        *humidity = -0.00069 * raw_humidity + 30.6;
+      } else {
+        x = raw_humidity - 22800;
+        *humidity = -fast_precise_powf(0.00046 * x, 3) - 0.0004 * x + 15;
+      }
+      if (*humidity < 0)
+        *humidity = 0.1f;
+      return true;
+    }
 
     if (this->model_ != DHT_MODEL_DHT22_TYPE2 && (raw_temperature & 0x8000) != 0)
       raw_temperature = ~(raw_temperature & 0x7FFF);
